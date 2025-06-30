@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>炮台射击游戏</title>
+    <style>
+        body {
+            position: relative;
+            width: 400px;
+            height: 600px;
+            margin: 0 auto;
+        }
+
+        canvas {
+            border: 1px solid black;
+            background-color: #000;
+            display: block;
+            margin: 0 auto;
+        }
+
+        #startScreen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 400px;
+            height: 600px;
+            background: #000a;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            font-size: 24px;
+            z-index: 10;
+        }
+
+        #startBtn {
+            margin-top: 20px;
+            padding: 10px 20px;
+            font-size: 18px;
+            cursor: pointer;
+        }
+
+        #hud {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-size: 18px;
+            font-family: sans-serif;
+            z-index: 5;
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="gameCanvas" width="400" height="600"></canvas>
+
+    <!-- 开始界面 -->
+    <div id="startScreen">
+        <div>炮台射击游戏</div>
+        <button id="startBtn">开始游戏</button>
+    </div>
+
+    <!-- 分数和计时器显示 -->
+    <div id="hud">
+        <div>得分: <span id="score">0</span> / 30</div>
+        <div>时间: <span id="timer">0</span> 秒</div>
+        <div>子弹伤害: <span id="bulletDamage">1</span></div>
+        <div>攻速: <span id="fireRate">2</span> 发/秒</div>
+        <div>弹道数: <span id="trajectoryCount">1</span></div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        const startScreen = document.getElementById('startScreen');
+        const startBtn = document.getElementById('startBtn');
+        const hud = document.getElementById('hud');
+        const scoreSpan = document.getElementById('score');
+        const timerSpan = document.getElementById('timer');
+        const bulletDamageSpan = document.getElementById('bulletDamage');
+        const fireRateSpan = document.getElementById('fireRate');
+        const trajectoryCountSpan = document.getElementById('trajectoryCount');
+
+        // 炮台属性
+        const cannon = {
+            x: canvas.width / 2 - 30, // 左上角坐标，宽60
+            y: canvas.height - 30,
+            width: 60,
+            height: 20,
+            color: 'gray',
+            speed: 5
+        };
+
+        // 子弹数组
+        let bullets = [];
+        const bulletSpeed = 5;
+
+        // 游戏属性
+        let hitCount = 0; // 击破方块数量
+        let bulletDamage = 1; // 当前子弹伤害，等于击破方块数，初始1
+        let bulletFireInterval = 500; // 初始发射间隔(ms)，0.5秒一发
+        let bulletFireIntervalId = null;
+        let bulletTrajectoryCount = 1; // 弹道数，初始1
+
+        // 方块数组
+        let blocks = [];
+        let blockWidth = 40; //初始宽度
+        const blockHeight = 20;
+        const blockSpeed = 1; // 方块向下移动速度
+
+        const MAX_BLOCK_WIDTH = 100; // 最大宽度限制
+
+        // 控制炮台移动的标志
+        let moveLeft = false;
+        let moveRight = false;
+
+        // 游戏状态
+        let gameRunning = false;
+        let score = 0;
+        let timer = 0;
+        let gameIntervalId = null; // 用于计时器
+        let blockSpawnIntervalId = null;
+
+        // 新增：记录上一个方块血量，初始为0
+        let lastBlockHp = 0;
+        // 新增变量，记录倒数第二个方块血量
+        let lastLastBlockHp = 0;
+
+        // 新增：记录生成方块总数
+        let totalBlocksSpawned = 0;
+
+        // 绘制炮台
+        function drawCannon() {
+            ctx.fillStyle = cannon.color;
+            ctx.fillRect(cannon.x, cannon.y, cannon.width, cannon.height);
+        }
+
+        // 绘制子弹
+        function drawBullets() {
+            bullets.forEach((bullet, index) => {
+                ctx.fillStyle = 'yellow';
+                ctx.beginPath();
+                ctx.arc(bullet.x, bullet.y, 3, 0, 2 * Math.PI);
+                ctx.fill();
+                bullet.y -= bulletSpeed;
+                // 超出画布顶部，移除子弹
+                if (bullet.y < 0) {
+                    bullets.splice(index, 1);
+                }
+            });
+        }
+
+        // 绘制方块及血量
+        function drawBlocks() {
+            blocks.forEach((block, index) => {
+                ctx.fillStyle = 'red';
+                ctx.fillRect(block.x, block.y, blockWidth, blockHeight);
+
+                // 绘制血量数字，白色居中
+                ctx.fillStyle = 'white';
+                ctx.font = '16px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(block.hp, block.x + blockWidth / 2, block.y + blockHeight / 2);
+
+                // 方块向下移动
+                block.y += blockSpeed;
+
+                // 如果方块到底部，游戏结束
+                if (block.y + blockHeight > canvas.height) {
+                    endGame();
+                }
+            });
+        }
+
+        // 发射子弹，支持多弹道
+        function fireBullet() {
+            const spacing = 10; // 弹道间距
+            const centerX = cannon.x + cannon.width / 2;
+            const totalWidth = (bulletTrajectoryCount - 1) * spacing;
+            for (let i = 0; i < bulletTrajectoryCount; i++) {
+                const offsetX = i * spacing - totalWidth / 2;
+                const bullet = {
+                    x: centerX + offsetX,
+                    y: cannon.y,
+                    damage: bulletDamage
+                };
+                bullets.push(bullet);
+            }
+        }
+
+        // 生成方块，随机x位置，血量随时间增加
+        function spawnBlock() {
+            blockWidth = Math.min(40 + (bulletTrajectoryCount - 1) * 10, MAX_BLOCK_WIDTH);// 根据弹道数调整方块宽度，简单线性关系
+
+            const x = Math.floor(Math.random() * (canvas.width - blockWidth));
+            totalBlocksSpawned++;
+
+            let hp = 1;
+
+            if (totalBlocksSpawned <= 9) {
+                // 1~9号方块，血量线性增长，至少为1
+                hp = Math.max(timer - 1, 1);
+            } else if (totalBlocksSpawned === 10) {
+                // 第10个方块，血量等于第9个方块血量（或你想要的其他值）
+                hp = lastBlockHp;
+            } else {
+                // 从第11个方块开始，血量为斐波那契数列：hp = lastBlockHp + lastLastBlockHp
+                hp = lastBlockHp + Math.floor(lastLastBlockHp) / 2;
+            }
+
+            // 更新记录的血量
+            lastLastBlockHp = lastBlockHp;
+            lastBlockHp = hp;
+
+            const block = {
+                x: x,
+                y: 0,
+                hp: hp
+            };
+            blocks.push(block);
+
+            // 调试输出
+            // console.log(`生成第${totalBlocksSpawned}个方块，血量：${hp}`);
+        }
+
+        // 击破方块后更新属性
+        function onBlockDestroyed() {
+            hitCount++;
+            bulletDamageSpan.textContent = bulletDamage;
+
+            // 计算当前击破方块数对4取模，判断触发哪个效果
+            const mod = hitCount % 4;
+
+            if (mod === 2) {
+                // 第2、6、10...个方块，子弹伤害加1
+                bulletDamage += 1;
+                bulletDamageSpan.textContent = bulletDamage;
+                console.log(`第${hitCount}个方块：子弹伤害+1！`);
+            } else if (mod === 3) {
+                // 第3、7、11...个方块，攻速翻倍（发射间隔减半）
+                bulletFireInterval = bulletFireInterval * 0.5;
+                resetBulletFireInterval();
+                fireRateSpan.textContent = (1000 / bulletFireInterval).toFixed(1);
+                console.log(`第${hitCount}个方块：攻速翻倍！`);
+            } else if (mod === 0) {
+                // 第4、8、12...个方块，子弹伤害翻倍
+                bulletDamage = bulletDamage * 2;
+                bulletDamageSpan.textContent = bulletDamage;
+                console.log(`第${hitCount}个方块：子弹伤害翻倍！`);
+            } else if (mod === 1 && hitCount !== 1) {
+                // 第5、9、13...个方块，弹道数+1
+                // 注意 hitCount=1时不触发弹道+1，因为1 % 4 = 1，但第1个方块不触发
+                bulletTrajectoryCount += 1;
+                trajectoryCountSpan.textContent = bulletTrajectoryCount;
+                console.log(`第${hitCount}个方块：弹道数+1！ 当前弹道数: ${bulletTrajectoryCount}`);
+            }
+        }
+
+
+        // 重置子弹发射定时器
+        function resetBulletFireInterval() {
+            if (bulletFireIntervalId) {
+                clearInterval(bulletFireIntervalId);
+            }
+            bulletFireIntervalId = setInterval(fireBullet, bulletFireInterval);
+        }
+
+        // 碰撞检测：子弹和方块
+        function checkCollisions() {
+            bullets.forEach((bullet, bIndex) => {
+                blocks.forEach((block, blIndex) => {
+                    if (
+                        bullet.x > block.x &&
+                        bullet.x < block.x + blockWidth &&
+                        bullet.y > block.y &&
+                        bullet.y < block.y + blockHeight
+                    ) {
+                        block.hp -= bullet.damage;
+                        bullets.splice(bIndex, 1);
+
+                        if (block.hp <= 0) {
+                            blocks.splice(blIndex, 1);
+                            score += 1;
+                            scoreSpan.textContent = score;
+
+                            onBlockDestroyed();
+
+                            if (score >= 100) {
+                                endGame();
+                            }
+                        }
+                    }
+                });
+            });
+        }
+
+        // 游戏循环
+        function gameLoop() {
+            if (!gameRunning) return;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (moveLeft && cannon.x > 0) {
+                cannon.x -= cannon.speed;
+            }
+            if (moveRight && cannon.x < canvas.width - cannon.width) {
+                cannon.x += cannon.speed;
+            }
+
+            drawCannon();
+            drawBullets();
+            drawBlocks();
+
+            checkCollisions();
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // 计时器更新
+        function updateTimer() {
+            timer++;
+            timerSpan.textContent = timer;
+        }
+
+        // 开始游戏
+        function startGame() {
+            gameRunning = true;
+            score = 0;
+            timer = 0;
+            bullets = [];
+            blocks = [];
+            cannon.x = canvas.width / 2 - cannon.width / 2;
+
+            hitCount = 0;
+            bulletDamage = 1;
+            bulletFireInterval = 500;
+            bulletTrajectoryCount = 1;
+
+            lastBlockHp = 0; // 重置上一个方块血量
+            totalBlocksSpawned = 0; // 重置生成方块计数
+
+            scoreSpan.textContent = score;
+            timerSpan.textContent = timer;
+            bulletDamageSpan.textContent = bulletDamage;
+            fireRateSpan.textContent = (1000 / bulletFireInterval).toFixed(1);
+            trajectoryCountSpan.textContent = bulletTrajectoryCount;
+
+            startScreen.style.display = 'none';
+            hud.style.display = 'block';
+
+            gameLoop();
+
+            setTimeout(() => {
+                blockSpawnIntervalId = setInterval(spawnBlock, 1500);
+            }, 1000);
+
+            resetBulletFireInterval();
+
+            gameIntervalId = setInterval(updateTimer, 1000);
+        }
+
+        // 结束游戏
+        function endGame() {
+            gameRunning = false;
+
+            clearInterval(blockSpawnIntervalId);
+            clearInterval(bulletFireIntervalId);
+            clearInterval(gameIntervalId);
+
+            blocks = [];
+            bullets = [];
+
+            startScreen.style.display = 'flex';
+            hud.style.display = 'none';
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        // 键盘事件监听
+        document.addEventListener('keydown', function (event) {
+            if (!gameRunning) return;
+            if (event.key === 'a' || event.key === 'A') {
+                moveLeft = true;
+            } else if (event.key === 'd' || event.key === 'D') {
+                moveRight = true;
+            }
+        });
+
+        document.addEventListener('keyup', function (event) {
+            if (!gameRunning) return;
+            if (event.key === 'a' || event.key === 'A') {
+                moveLeft = false;
+            } else if (event.key === 'd' || event.key === 'D') {
+                moveRight = false;
+            }
+        });
+
+        // 点击开始按钮
+        startBtn.addEventListener('click', startGame);
+    </script>
+</body>
+
+</html>
